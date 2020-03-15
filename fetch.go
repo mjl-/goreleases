@@ -13,11 +13,19 @@ import (
 	"strings"
 )
 
+// Permissions to set on extract files and directories, overriding permissions in the archive.
+type Permissions struct {
+	Uid  int
+	Gid  int
+	Mode os.FileMode // Mode to use for extract files and directories. Files are masked with 0777 or 0666 depending on whether 0100 is set.
+}
+
 // Fetch downloads, extracts and verifies a Go release represented by file into directory dst.
 // After a successful fetch, dst contains a directory "go" with the specified release.
 // Directory dst must exist. It must not already contain a "go" subdirectory.
 // Only files with filenames ending .tar.gz are supported. So no macOS or Windows.
-func Fetch(file File, dst string) error {
+// If permissions is not nil, it is applied to extracted files and directories.
+func Fetch(file File, dst string, permissions *Permissions) error {
 	if !strings.HasSuffix(file.Filename, ".tar.gz") {
 		return fmt.Errorf("file extension not supported, only .tar.gz supported")
 	}
@@ -80,7 +88,7 @@ func Fetch(file File, dst string) error {
 			return err
 		}
 
-		err = store(dst, tr, h, name)
+		err = store(dst, tr, h, name, permissions)
 		if err != nil {
 			return err
 		}
@@ -108,6 +116,10 @@ func (hr *hashReader) Read(buf []byte) (n int, err error) {
 }
 
 func dstName(dst, name string) (string, error) {
+	if name != "go" && !strings.HasPrefix(name, "go/") {
+		return "", fmt.Errorf("path %q: does not start with \"go\"", name)
+	}
+
 	r := path.Clean(path.Join(dst, name))
 	if !strings.HasPrefix(r, dst) {
 		return "", fmt.Errorf("bad path %q in archive, resulting in path %q outside dst %q", name, r, dst)
@@ -115,12 +127,12 @@ func dstName(dst, name string) (string, error) {
 	return r, nil
 }
 
-func store(dst string, tr *tar.Reader, h *tar.Header, name string) error {
+func store(dst string, tr *tar.Reader, h *tar.Header, name string, perms *Permissions) error {
 	os.MkdirAll(path.Dir(name), 0777)
 
 	switch h.Typeflag {
 	case tar.TypeReg:
-		f, err := os.Create(name)
+		f, err := os.OpenFile(name, os.O_RDWR|os.O_CREATE|os.O_TRUNC, os.FileMode(h.Mode)&0777)
 		if err != nil {
 			return err
 		}
@@ -137,9 +149,24 @@ func store(dst string, tr *tar.Reader, h *tar.Header, name string) error {
 		if n != h.Size {
 			return fmt.Errorf("extracting %d bytes, expected %d", n, h.Size)
 		}
-		err = f.Chmod(os.FileMode(h.Mode) & os.ModePerm)
+		if perms != nil {
+			mode := perms.Mode & 0777
+			if h.Mode&0100 == 0 {
+				mode &= 0666
+			}
+			err = f.Chmod(mode)
+			if err != nil {
+				return fmt.Errorf("chmod: %s", err)
+			}
+
+			err := os.Lchown(name, perms.Uid, perms.Gid)
+			if err != nil {
+				return fmt.Errorf("chown: %v", err)
+			}
+		}
+		err = os.Chtimes(name, h.AccessTime, h.ModTime)
 		if err != nil {
-			return fmt.Errorf("chmod: %s", err)
+			return fmt.Errorf("chtimes: %v", err)
 		}
 		err = f.Close()
 		if err != nil {
@@ -158,9 +185,38 @@ func store(dst string, tr *tar.Reader, h *tar.Header, name string) error {
 		if err != nil {
 			return err
 		}
-		return os.Symlink(linkname, name)
+		err = os.Symlink(linkname, name)
+		if err != nil {
+			return err
+		}
+		if perms != nil {
+			err := os.Lchown(name, perms.Uid, perms.Gid)
+			if err != nil {
+				return fmt.Errorf("chown: %v", err)
+			}
+		}
+		return nil
 	case tar.TypeDir:
-		return os.Mkdir(name, 0777)
+		err := os.Mkdir(name, 0777)
+		if err != nil {
+			return fmt.Errorf("mkdir: %v", err)
+		}
+		if perms != nil {
+			err = os.Chmod(name, perms.Mode)
+			if err != nil {
+				return fmt.Errorf("chmod: %s", err)
+			}
+
+			err := os.Lchown(name, perms.Uid, perms.Gid)
+			if err != nil {
+				return fmt.Errorf("chown: %v", err)
+			}
+		}
+		err = os.Chtimes(name, h.AccessTime, h.ModTime)
+		if err != nil {
+			return fmt.Errorf("chtimes: %v", err)
+		}
+		return nil
 	case tar.TypeXGlobalHeader, tar.TypeGNUSparse:
 		return nil
 	}

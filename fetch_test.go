@@ -27,7 +27,7 @@ func TestFetch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("mkdir tmp: %s", err)
 	}
-	err = Fetch(file, "tmp")
+	err = Fetch(file, "tmp", nil)
 	if err != nil {
 		t.Fatalf("fetch into tmp: %s", err)
 	}
