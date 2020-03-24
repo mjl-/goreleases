@@ -2,6 +2,7 @@ package goreleases
 
 import (
 	"os"
+	"runtime"
 	"testing"
 )
 
@@ -17,9 +18,9 @@ func TestFetch(t *testing.T) {
 	}
 
 	rel := rels[0]
-	file, err := FindFile(rel, "linux", "amd64", "archive")
+	file, err := FindFile(rel, runtime.GOOS, runtime.GOARCH, "archive")
 	if err != nil {
-		t.Fatalf("finding linux/amd64 archive: %s", err)
+		t.Fatalf("finding current hosts archive: %s", err)
 	}
 	t.Logf("fetching release %q", rel.Version)
 
