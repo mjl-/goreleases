@@ -1,8 +1,8 @@
 package goreleases
 
 import (
-	"strings"
 	"log"
+	"strings"
 
 	"golang.org/x/crypto/openpgp"
 )
